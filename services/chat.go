@@ -1,11 +1,13 @@
 package chat
 
+import _ "github.com/joho/godotenv/autoload"
 import (
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -27,21 +29,90 @@ type Message struct {
 	PlatformColor string `json:"platformColor"`
 }
 
+type YouTubeMessage struct {
+	Author struct {
+		Name string `json:"name"`
+	} `json:"author"`
+	Message   string `json:"message"`
+	Timestamp string `json:"timestamp"`
+}
+
+type BTTVEmote struct {
+	ID        string `json:"id"`
+	Code      string `json:"code"`
+	ImageType string `json:"imageType"`
+}
+
+type BTTVChannelResponse struct {
+	ChannelEmotes []BTTVEmote `json:"channelEmotes"`
+	SharedEmotes  []BTTVEmote `json:"sharedEmotes"`
+}
+
+type TwitchEmote struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+type TwitchEmotesResponse struct {
+	Data []TwitchEmote `json:"data"`
+}
+
 type ChatService struct {
 	clients    map[*websocket.Conn]bool
 	broadcast  chan Message
 	register   chan *websocket.Conn
 	unregister chan *websocket.Conn
 	mu         sync.Mutex
+	emoteCache map[string]string
+	twitchID   string
 }
 
-func NewChatService() *ChatService {
-	return &ChatService{
+func NewChatService(twitchChannel string) *ChatService {
+	cs := &ChatService{
 		clients:    make(map[*websocket.Conn]bool),
 		broadcast:  make(chan Message),
 		register:   make(chan *websocket.Conn),
 		unregister: make(chan *websocket.Conn),
+		emoteCache: make(map[string]string),
 	}
+	if twitchChannel != "" {
+		cs.twitchID = getTwitchID(twitchChannel)
+	}
+	cs.loadEmotes()
+	return cs
+}
+
+func getTwitchID(channel string) string {
+	url := fmt.Sprintf("https://api.twitch.tv/helix/users?login=%s", url.QueryEscape(channel))
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		log.Printf("Error creating Twitch API request: %v", err)
+		return ""
+	}
+	req.Header.Set("Client-ID", os.Getenv("TWITCH_CLIENT_ID"))
+	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", os.Getenv("TWITCH_OAUTH_TOKEN")))
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Printf("Error fetching Twitch channel ID: %v", err)
+		return ""
+	}
+	defer resp.Body.Close()
+
+	var result struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		log.Printf("Error decoding Twitch API response: %v", err)
+		return ""
+	}
+	if len(result.Data) > 0 {
+		return result.Data[0].ID
+	}
+	return ""
 }
 
 // Run starts the chat service
@@ -65,9 +136,18 @@ func (cs *ChatService) Run(key string) {
 				continue
 			}
 
+			message.Content = cs.parseEmotes(message.Content)
+
 			cs.mu.Lock()
 			for client := range cs.clients {
-				err := client.WriteJSON(message)
+				err := client.WriteMessage(websocket.TextMessage, []byte(fmt.Sprintf(
+					`<p class="message"><span style="font-family: Hack Nerd Font; color: %s;">%s</span> <strong style="color: %s;">%s</strong>: %s</p>`,
+					message.PlatformColor,
+					message.Platform,
+					message.Color,
+					message.Username,
+					message.Content,
+				)))
 				if err != nil {
 					log.Printf("[%s] Error sending message to client: %v", color.GreenString(key), err)
 					client.Close()
@@ -77,6 +157,86 @@ func (cs *ChatService) Run(key string) {
 			cs.mu.Unlock()
 		}
 	}
+}
+
+func (cs *ChatService) loadEmotes() {
+	var bttvEmotes []BTTVEmote
+	if err := fetchJSON("https://api.betterttv.net/3/cached/emotes/global", &bttvEmotes); err == nil {
+		for _, emote := range bttvEmotes {
+			cs.emoteCache[emote.Code] = fmt.Sprintf("https://cdn.betterttv.net/emote/%s/1x", emote.ID)
+		}
+	} else {
+		log.Printf("Error fetching BTTV global emotes: %v", err)
+	}
+
+	if cs.twitchID != "" {
+		var channelResponse BTTVChannelResponse
+		url := fmt.Sprintf("https://api.betterttv.net/3/cached/users/twitch/%s", cs.twitchID)
+		if err := fetchJSON(url, &channelResponse); err == nil {
+			for _, emote := range channelResponse.ChannelEmotes {
+				cs.emoteCache[emote.Code] = fmt.Sprintf("https://cdn.betterttv.net/emote/%s/1x", emote.ID)
+			}
+			for _, emote := range channelResponse.SharedEmotes {
+				cs.emoteCache[emote.Code] = fmt.Sprintf("https://cdn.betterttv.net/emote/%s/1x", emote.ID)
+			}
+		} else {
+			log.Printf("Error fetching BTTV channel emotes: %v", err)
+		}
+	}
+
+	twitchEmoteURL := "https://api.twitch.tv/helix/chat/emotes/global"
+	req, err := http.NewRequest("GET", twitchEmoteURL, nil)
+	if err != nil {
+		log.Printf("Error creating Twitch emotes API request: %v", err)
+		return
+	}
+	clientID := os.Getenv("TWITCH_CLIENT_ID")
+	token := os.Getenv("TWITCH_OAUTH_TOKEN")
+	req.Header.Set("Client-ID", clientID)
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Printf("Error fetching Twitch global emotes: %v", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	var twitchResponse TwitchEmotesResponse
+	if err := json.NewDecoder(resp.Body).Decode(&twitchResponse); err != nil {
+		log.Printf("Error decoding Twitch emotes API response: %v", err)
+		return
+	}
+
+	for _, emote := range twitchResponse.Data {
+		// Use the 1x scale image for consistency with BTTV
+		cs.emoteCache[emote.Name] = fmt.Sprintf("https://static-cdn.jtvnw.net/emoticons/v2/%s/default/dark/1.0", emote.ID)
+	}
+
+	log.Printf("Loaded %d emotes", len(cs.emoteCache))
+}
+
+func fetchJSON(url string, target interface{}) error {
+	resp, err := http.Get(url)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	return json.NewDecoder(resp.Body).Decode(target)
+}
+
+func (cs *ChatService) parseEmotes(message string) string {
+	words := strings.Fields(message)
+	var result []string
+	for _, word := range words {
+		if imgURL, ok := cs.emoteCache[word]; ok {
+			result = append(result, fmt.Sprintf(`<img class="message-emote" src="%s" alt="%s"/>`, imgURL, word))
+		} else {
+			result = append(result, word)
+		}
+	}
+	return strings.Join(result, " ")
 }
 
 // WebSocket upgrader
@@ -125,14 +285,6 @@ func twitchListener(channel string, service *ChatService) {
 			log.Fatalf("Twitch IRC connection error: %v", err)
 		}
 	}()
-}
-
-type YouTubeMessage struct {
-	Author struct {
-		Name string `json:"name"`
-	} `json:author`
-	Message   string `json:"message"`
-	Timestamp string `json:"timestamp"`
 }
 
 func youtubeListener(channelID string, workerURL string, service *ChatService) {
@@ -198,7 +350,7 @@ func GetChatRoutes() []Route {
 				key := GetKey(q)
 				_, ok := services[key]
 				if !ok {
-					service := NewChatService()
+					service := NewChatService(twitchChannel)
 					services[key] = service
 					go service.Run(key)
 					if twitchChannel != "" {
@@ -223,7 +375,7 @@ func GetChatRoutes() []Route {
 				key := GetKey(q)
 				service, ok := services[key]
 				if !ok {
-					service = NewChatService()
+					service = NewChatService(q.Get("twitch"))
 					services[key] = service
 					go service.Run(key)
 					if q.Get("twitch") != "" {

@@ -17,6 +17,13 @@
       .message {
         font-size: 16px;
       }
+
+      .message-emote {
+        display: inline-block;
+        vertical-align: middle;
+        height: 20px;
+        margin-top: -4px;
+      }
     </style>
     <script src="https://cdn.tailwindcss.com"></script>
   </head>
@@ -33,26 +40,12 @@
       const chatDiv = document.getElementById("chat");
       const MAX_MESSAGES = 100;
 
-      ws.onmessage = function (event) {
-        const message = JSON.parse(event.data);
-        const msgElement = document.createElement("p");
-        msgElement.className = "message";
-        const platformElement = document.createElement("span");
-        const usernameElement = document.createElement("strong");
-        const contentElement = document.createElement("span");
-        platformElement.textContent = `${message.platform} `;
-        usernameElement.textContent = `${message.username}`;
-        contentElement.textContent = `: ${message.content}`;
-        //msgElement.textContent = `[${message.platform}] ${message.username}: ${message.content}`;
-        usernameElement.style.color =
-          message.color == "" ? "#ffffff" : message.color;
-        platformElement.style.fontFamily = "Hack Nerd Font";
-        platformElement.style.color = message.platformColor;
-        chatDiv.appendChild(msgElement);
-        msgElement.appendChild(platformElement);
-        msgElement.appendChild(usernameElement);
-        msgElement.appendChild(contentElement);
-        chatDiv.scrollTop = chatDiv.scrollHeight; // Auto-scroll to bottom
+      ws.onmessage = function ({ data }) {
+        const e = document.createElement("div");
+        e.classList.add("message-cont");
+        e.innerHTML = data;
+        chatDiv.appendChild(e);
+        chatDiv.scrollTop = chatDiv.scrollHeight;
       };
 
       ws.onclose = function () {
@@ -65,7 +58,7 @@
 
       // Function to purge non-visible messages
       function purgeOldMessages() {
-        const messages = chatDiv.querySelectorAll(".message");
+        const messages = chatDiv.querySelectorAll(".message-cont");
         const chatRect = chatDiv.getBoundingClientRect();
 
         // Remove messages that are above the visible area

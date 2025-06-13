@@ -1,0 +1,91 @@
+<!doctype html>
+<html>
+  <head>
+    <title>Chat Widget</title>
+    <style>
+      /* For Webkit-based browsers (Chrome, Safari and Opera) */
+      .scrollbar-hidden::-webkit-scrollbar {
+        display: none;
+      }
+
+      /* For IE, Edge and Firefox */
+      .scrollbar-hidden {
+        -ms-overflow-style: none; /* IE and Edge */
+        scrollbar-width: none; /* Firefox */
+      }
+
+      .message {
+        font-size: 16px;
+      }
+    </style>
+    <script src="https://cdn.tailwindcss.com"></script>
+  </head>
+  <body>
+    <div
+      style="background-color: #121216"
+      id="chat"
+      class="scrollbar-hidden w-[300px] h-[400px] overflow-y-auto text-white p-3 font-sans"
+    ></div>
+    <script>
+      const ws = new WebSocket(
+        `ws://localhost:1776/ws/chat${window.location.search}`,
+      );
+      const chatDiv = document.getElementById("chat");
+      const MAX_MESSAGES = 100;
+
+      ws.onmessage = function (event) {
+        const message = JSON.parse(event.data);
+        const msgElement = document.createElement("p");
+        msgElement.className = "message";
+        const platformElement = document.createElement("span");
+        const usernameElement = document.createElement("strong");
+        const contentElement = document.createElement("span");
+        platformElement.textContent = `${message.platform} `;
+        usernameElement.textContent = `${message.username}`;
+        contentElement.textContent = `: ${message.content}`;
+        //msgElement.textContent = `[${message.platform}] ${message.username}: ${message.content}`;
+        usernameElement.style.color =
+          message.color == "" ? "#ffffff" : message.color;
+        platformElement.style.fontFamily = "Hack Nerd Font";
+        platformElement.style.color = message.platformColor;
+        chatDiv.appendChild(msgElement);
+        msgElement.appendChild(platformElement);
+        msgElement.appendChild(usernameElement);
+        msgElement.appendChild(contentElement);
+        chatDiv.scrollTop = chatDiv.scrollHeight; // Auto-scroll to bottom
+      };
+
+      ws.onclose = function () {
+        console.log("WebSocket connection closed");
+      };
+
+      ws.onerror = function (error) {
+        console.error("WebSocket error:", error);
+      };
+
+      // Function to purge non-visible messages
+      function purgeOldMessages() {
+        const messages = chatDiv.querySelectorAll(".message");
+        const chatRect = chatDiv.getBoundingClientRect();
+
+        // Remove messages that are above the visible area
+        messages.forEach((msg) => {
+          const msgRect = msg.getBoundingClientRect();
+          if (msgRect.bottom < chatRect.top) {
+            msg.remove();
+          }
+        });
+
+        // Optional: Enforce a hard limit on message count
+        if (messages.length > MAX_MESSAGES) {
+          const excess = messages.length - MAX_MESSAGES;
+          for (let i = 0; i < excess; i++) {
+            chatDiv.firstChild.remove();
+          }
+        }
+      }
+
+      setInterval(purgeOldMessages, 10000);
+    </script>
+  </body>
+</html>

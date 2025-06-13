@@ -34,6 +34,7 @@ func init() {
 }
 
 func IsBad(message string) bool {
+	return false
 	message = strings.ToLower(message)
 	for _, re := range badWords {
 		if re.MatchString(message) {

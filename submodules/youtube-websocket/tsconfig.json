@@ -1,0 +1,33 @@
+{
+	"compilerOptions": {
+		"target": "es2021",
+		"lib": [
+			"es2021"
+		],
+		"baseUrl": ".",
+		"module": "es2022",
+		"moduleResolution": "node",
+		"types": [
+			"@cloudflare/workers-types"
+		],
+		"resolveJsonModule": true,
+		"noEmit": true,
+		"isolatedModules": true,
+		"allowSyntheticDefaultImports": true,
+		"forceConsistentCasingInFileNames": true,
+		"strict": true,
+		"alwaysStrict": true,
+		"noUncheckedIndexedAccess": true,
+		"skipLibCheck": true,
+		"paths": {
+			"@util/*": [
+				"src/util/*"
+			]
+		}
+	},
+	"ts-node": {
+		"compilerOptions": {
+			"module": "commonjs"
+		}
+	},
+}

@@ -1,13 +1,16 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/cenkalti/backoff/v4"
 	"github.com/fatih/color"
 	"github.com/gempir/go-twitch-irc/v4"
 	"github.com/gorilla/mux"
@@ -86,7 +89,20 @@ var upgrader = websocket.Upgrader{
 }
 
 func getKey(query url.Values) string {
-	return query.Get("twitch") // TODO add other params here
+	platforms := []string{"twitch", "youtube"}
+	var keys []string
+
+	for _, platform := range platforms {
+		if value := query.Get(platform); value != "" {
+			keys = append(keys, value)
+		}
+	}
+
+	if len(keys) == 0 {
+		return ""
+	}
+
+	return strings.Join(keys, ",")
 }
 
 func twitchListener(channel string, service *ChatService) {
@@ -109,6 +125,59 @@ func twitchListener(channel string, service *ChatService) {
 			log.Fatalf("Twitch IRC connection error: %v", err)
 		}
 	}()
+}
+
+type YouTubeMessage struct {
+	Author struct {
+		Name string `json:"name"`
+	} `json:author`
+	Message   string `json:"message"`
+	Timestamp string `json:"timestamp"`
+}
+
+func youtubeListener(channelID string, workerURL string, service *ChatService) {
+	b := backoff.NewExponentialBackOff()
+	b.MaxElapsedTime = 0 // retry indefinitely
+
+	for {
+		err := connectYouTubeWebSocket(channelID, workerURL, service)
+		if err != nil {
+			log.Printf("YouTube WebSocket error, retrying: %v", err)
+			time.Sleep(b.NextBackOff())
+			continue
+		}
+		b.Reset()
+	}
+}
+
+func connectYouTubeWebSocket(channelID string, workerURL string, service *ChatService) error {
+	wsURL := fmt.Sprintf("%s/c/%s", workerURL, channelID)
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	for {
+		_, message, err := conn.ReadMessage()
+		if err != nil {
+			return err
+		}
+		var ytMessage YouTubeMessage
+		if err := json.Unmarshal(message, &ytMessage); err != nil {
+			log.Printf("Failed to parse YouTube message: %v", err)
+			continue
+		}
+		chatMessage := Message{
+			Platform:      "\uf16a",
+			Username:      ytMessage.Author.Name,
+			Content:       ytMessage.Message,
+			Timestamp:     ytMessage.Timestamp,
+			Color:         "#ffffff",
+			PlatformColor: "#ff0000",
+		}
+		service.broadcast <- chatMessage
+	}
 }
 
 func main() {
@@ -140,6 +209,7 @@ func main() {
 	R.HandleFunc("/chat", func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
 		twitchChannel := q.Get("twitch")
+		youtubeChannel := q.Get("youtube")
 
 		key := getKey(q)
 		_, ok := services[key]
@@ -148,7 +218,12 @@ func main() {
 			service := NewChatService()
 			services[key] = service
 			go service.Run(key)
-			twitchListener(twitchChannel, service)
+			if twitchChannel != "" {
+				twitchListener(twitchChannel, service)
+			}
+			if youtubeChannel != "" {
+				go youtubeListener(youtubeChannel, "ws://localhost:8787", service)
+			}
 		}
 
 		http.ServeFile(w, r, "./widgets/chat/chat.html")
@@ -169,7 +244,12 @@ func main() {
 			service = NewChatService()
 			services[key] = service
 			go service.Run(key)
-			twitchListener(q.Get("twitch"), service)
+			if q.Get("twitch") != "" {
+				twitchListener(q.Get("twitch"), service)
+			}
+			if q.Get("youtube") != "" {
+				go youtubeListener(q.Get("youtube"), "ws://localhost:8787", service)
+			}
 		}
 
 		service.register <- conn
